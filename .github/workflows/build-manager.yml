@@ -1,0 +1,284 @@
+name: Build FWJZ Bot Manager Pro UI
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Create iOS Pro UI Source Code
+        run: |
+          mkdir -p FWJZManager
+          cat << 'EOF' > FWJZManager/main.m
+          #import <UIKit/UIKit.h>
+
+          @interface ViewController : UIViewController <UITextFieldDelegate, UITableViewDelegate, UITableViewDataSource>
+          @property (nonatomic, strong) UITextField *txtHost;
+          @property (nonatomic, strong) UILabel *lblTotalOrders;
+          @property (nonatomic, strong) UILabel *lblRevenue;
+          @property (nonatomic, strong) UITableView *tableView;
+          @property (nonatomic, strong) NSMutableArray *orderList;
+          @property (nonatomic, strong) UIActivityIndicatorView *spinner;
+          @end
+
+          @implementation ViewController
+
+          - (void)viewDidLoad {
+              [super viewDidLoad];
+              self.orderList = [NSMutableArray array];
+              self.view.backgroundColor = [UIColor colorWithRed:0.05 green:0.06 blue:0.09 alpha:1.0];
+
+              CGFloat w = self.view.bounds.size.width;
+
+              // 1. Header phát sáng
+              UILabel *header = [[UILabel alloc] initWithFrame:CGRectMake(20, 55, w - 40, 28)];
+              header.text = @"⚡ FWJZ CONTROL CENTER ⚡";
+              header.textColor = [UIColor colorWithRed:0.0 green:0.95 blue:0.85 alpha:1.0];
+              header.font = [UIFont boldSystemFontOfSize:17];
+              header.textAlignment = NSTextAlignmentCenter;
+              [self.view addSubview:header];
+
+              // 2. Ô nhập Host Server (Glass box)
+              UIView *hostBox = [[UIView alloc] initWithFrame:CGRectMake(20, 95, w - 40, 42)];
+              hostBox.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.8];
+              hostBox.layer.cornerRadius = 10.0;
+              hostBox.layer.borderWidth = 1.0;
+              hostBox.layer.borderColor = [UIColor colorWithWhite:0.25 alpha:0.6].CGColor;
+              [self.view addSubview:hostBox];
+
+              self.txtHost = [[UITextField alloc] initWithFrame:CGRectMake(12, 0, hostBox.bounds.size.width - 24, 42)];
+              self.txtHost.textColor = [UIColor colorWithRed:0.9 green:0.9 blue:1.0 alpha:1.0];
+              self.txtHost.text = @"http://your-server-ip:5000";
+              self.txtHost.font = [UIFont fontWithName:@"Menlo" size:13];
+              self.txtHost.delegate = self;
+              self.txtHost.keyboardAppearance = UIKeyboardAppearanceDark;
+              [hostBox addSubview:self.txtHost];
+
+              // 3. Hai thẻ chỉ số Neon (Stat Cards)
+              CGFloat cardW = (w - 50) / 2;
+              
+              // Thẻ Đơn hàng
+              UIView *cardOrders = [self makeCardWithFrame:CGRectMake(20, 148, cardW, 75) 
+                                                     title:@"📦 TỔNG ĐƠN" 
+                                                accentColor:[UIColor colorWithRed:0.2 green:0.7 blue:1.0 alpha:1.0]];
+              self.lblTotalOrders = [self makeStatValueLabel:cardOrders.bounds color:[UIColor colorWithRed:0.2 green:0.7 blue:1.0 alpha:1.0]];
+              self.lblTotalOrders.text = @"0";
+              [cardOrders addSubview:self.lblTotalOrders];
+              [self.view addSubview:cardOrders];
+
+              // Thẻ Doanh thu
+              UIView *cardRev = [self makeCardWithFrame:CGRectMake(30 + cardW, 148, cardW, 75) 
+                                                  title:@"💰 DOANH THU" 
+                                             accentColor:[UIColor colorWithRed:0.0 green:0.9 blue:0.5 alpha:1.0]];
+              self.lblRevenue = [self makeStatValueLabel:cardRev.bounds color:[UIColor colorWithRed:0.0 green:0.9 blue:0.5 alpha:1.0]];
+              self.lblRevenue.text = @"0đ";
+              [cardRev addSubview:self.lblRevenue];
+              [self.view addSubview:cardRev];
+
+              // 4. Nút bấm Làm mới dữ liệu Gradient
+              UIButton *btnRefresh = [UIButton buttonWithType:UIButtonTypeCustom];
+              btnRefresh.frame = CGRectMake(20, 235, w - 40, 44);
+              btnRefresh.backgroundColor = [UIColor colorWithRed:0.1 green:0.45 blue:0.9 alpha:1.0];
+              btnRefresh.layer.cornerRadius = 12.0;
+              [btnRefresh setTitle:@"⚡ ĐỒNG BỘ DỮ LIỆU" forState:UIControlStateNormal];
+              [btnRefresh setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+              btnRefresh.titleLabel.font = [UIFont boldSystemFontOfSize:13.5];
+              [btnRefresh addTarget:self action:@selector(fetchData) forControlEvents:UIControlEventTouchUpInside];
+              [self.view addSubview:btnRefresh];
+
+              // Loading Spinner
+              self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+              self.spinner.color = [UIColor whiteColor];
+              self.spinner.center = CGPointMake(btnRefresh.bounds.size.width - 35, 22);
+              [btnRefresh addSubview:self.spinner];
+
+              // 5. Bảng đơn hàng dạng thẻ bo tròn
+              UILabel *listTitle = [[UILabel alloc] initWithFrame:CGRectMake(22, 290, 200, 20)];
+              listTitle.text = @"⚡ ĐƠN HÀNG MỚI NHẤT";
+              listTitle.textColor = [UIColor colorWithWhite:0.7 alpha:1.0];
+              listTitle.font = [UIFont boldSystemFontOfSize:11.5];
+              [self.view addSubview:listTitle];
+
+              self.tableView = [[UITableView alloc] initWithFrame:CGRectMake(20, 315, w - 40, self.view.bounds.size.height - 330) style:UITableViewStylePlain];
+              self.tableView.backgroundColor = [UIColor clearColor];
+              self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
+              self.tableView.delegate = self;
+              self.tableView.dataSource = self;
+              self.tableView.showsVerticalScrollIndicator = NO;
+              [self.view addSubview:self.tableView];
+          }
+
+          - (UIView *)makeCardWithFrame:(CGRect)frame title:(NSString *)title accentColor:(UIColor *)color {
+              UIView *v = [[UIView alloc] initWithFrame:frame];
+              v.backgroundColor = [UIColor colorWithRed:0.09 green:0.10 blue:0.15 alpha:0.9];
+              v.layer.cornerRadius = 14.0;
+              v.layer.borderWidth = 1.2;
+              v.layer.borderColor = [color colorWithAlphaComponent:0.4].CGColor;
+
+              UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 10, frame.size.width - 24, 16)];
+              t.text = title;
+              t.textColor = [UIColor colorWithWhite:0.6 alpha:1.0];
+              t.font = [UIFont boldSystemFontOfSize:11];
+              [v addSubview:t];
+              return v;
+          }
+
+          - (UILabel *)makeStatValueLabel:(CGRect)bounds color:(UIColor *)color {
+              UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(12, 30, bounds.size.width - 24, 34)];
+              lbl.textColor = color;
+              lbl.font = [UIFont boldSystemFontOfSize:18];
+              return lbl;
+          }
+
+          - (void)fetchData {
+              UIImpactFeedbackGenerator *feed = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+              [feed impactOccurred];
+              [self.spinner startAnimating];
+
+              NSString *urlStr = [NSString stringWithFormat:@"%@/api/stats", self.txtHost.text];
+              NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlStr]];
+              [req setValue:@"fwjz_secret_key_2026" forHTTPHeaderField:@"X-API-KEY"];
+              req.timeoutInterval = 6.0;
+
+              [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *res, NSError *err) {
+                  dispatch_async(dispatch_get_main_queue(), ^{
+                      [self.spinner stopAnimating];
+                      if (err || !data) return;
+
+                      NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                      if (json) {
+                          self.lblTotalOrders.text = [NSString stringWithFormat:@"%@", json[@"total_orders"]];
+                          self.lblRevenue.text = [NSString stringWithFormat:@"%@đ", json[@"revenue"]];
+                          self.orderList = [NSMutableArray arrayWithArray:json[@"orders"]];
+                          [self.tableView reloadData];
+                      }
+                  });
+              }] resume];
+          }
+
+          #pragma mark - UITableView DataSource
+          - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+              return self.orderList.count;
+          }
+
+          - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+              return 68.0;
+          }
+
+          - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+              UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"cell"];
+              if (!cell) {
+                  cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"cell"];
+                  cell.backgroundColor = [UIColor clearColor];
+                  cell.selectionStyle = UITableViewCellSelectionStyleNone;
+
+                  UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 4, tableView.bounds.size.width, 60)];
+                  box.tag = 100;
+                  box.backgroundColor = [UIColor colorWithRed:0.09 green:0.11 blue:0.16 alpha:0.9];
+                  box.layer.cornerRadius = 10.0;
+                  box.layer.borderWidth = 0.8;
+                  box.layer.borderColor = [UIColor colorWithWhite:0.2 alpha:0.7].CGColor;
+                  [cell.contentView addSubview:box];
+
+                  UILabel *userLbl = [[UILabel alloc] initWithFrame:CGRectMake(12, 10, 180, 18)];
+                  userLbl.tag = 101;
+                  userLbl.textColor = [UIColor whiteColor];
+                  userLbl.font = [UIFont boldSystemFontOfSize:13];
+                  [box addSubview:userLbl];
+
+                  UILabel *prodLbl = [[UILabel alloc] initWithFrame:CGRectMake(12, 32, 220, 16)];
+                  prodLbl.tag = 102;
+                  prodLbl.textColor = [UIColor colorWithWhite:0.6 alpha:1.0];
+                  prodLbl.font = [UIFont systemFontOfSize:11.5];
+                  [box addSubview:prodLbl];
+
+                  UILabel *priceLbl = [[UILabel alloc] initWithFrame:CGRectMake(box.bounds.size.width - 110, 18, 98, 22)];
+                  priceLbl.tag = 103;
+                  priceLbl.textAlignment = NSTextAlignmentRight;
+                  priceLbl.textColor = [UIColor colorWithRed:0.0 green:0.95 blue:0.7 alpha:1.0];
+                  priceLbl.font = [UIFont boldSystemFontOfSize:13.5];
+                  [box addSubview:priceLbl];
+              }
+
+              UIView *box = [cell.contentView viewWithTag:100];
+              UILabel *userLbl = [box viewWithTag:101];
+              UILabel *prodLbl = [box viewWithTag:102];
+              UILabel *priceLbl = [box viewWithTag:103];
+
+              NSArray *item = self.orderList[indexPath.row];
+              userLbl.text = [NSString stringWithFormat:@"#%@ • @%@", item[0], item[1]];
+              prodLbl.text = [NSString stringWithFormat:@"%@", item[2]];
+              priceLbl.text = [NSString stringWithFormat:@"%@đ", item[3]];
+
+              return cell;
+          }
+
+          - (BOOL)textFieldShouldReturn:(UITextField *)textField {
+              [textField resignFirstResponder];
+              return YES;
+          }
+          @end
+
+          @interface AppDelegate : UIResponder <UIApplicationDelegate>
+          @property (strong, nonatomic) UIWindow *window;
+          @end
+
+          @implementation AppDelegate
+          - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+              self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+              self.window.rootViewController = [[ViewController alloc] init];
+              [self.window makeKeyAndVisible];
+              return YES;
+          }
+          @end
+
+          int main(int argc, char * argv[]) {
+              @autoreleasepool {
+                  return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
+              }
+          }
+          EOF
+
+          cat << 'EOF' > FWJZManager/Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleIdentifier</key>
+              <string>com.fwjz.procontrol</string>
+              <key>CFBundleName</key>
+              <string>FWJZ Pro</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>2.0</string>
+              <key>CFBundleVersion</key>
+              <string>2</string>
+              <key>NSAppTransportSecurity</key>
+              <dict>
+                  <key>NSAllowsArbitraryLoads</key>
+                  <true/>
+              </dict>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Compile and Package Pro IPA
+        run: |
+          mkdir -p Payload/FWJZManager.app
+          xcrun -sdk iphoneos clang -target arm64-apple-ios14.0 \
+            -fobjc-arc -framework UIKit -framework Foundation -framework CoreGraphics \
+            FWJZManager/main.m -o Payload/FWJZManager.app/FWJZManager
+          cp FWJZManager/Info.plist Payload/FWJZManager.app/
+          zip -r FWJZProManager.ipa Payload
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FWJZ-Pro-Manager-IPA
+          path: FWJZProManager.ipa
